@@ -33,6 +33,7 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
         uint256 _maxSupply, 
         string memory _initialUri,
         address _paymentToken
+
     ) ERC1155(_initialUri) {
         
         require(_tokenPrice > 0, InvalidTokenPrice());
