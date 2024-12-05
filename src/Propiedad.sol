@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// Compatible with OpenZeppelin Contracts ^5.0.0
 pragma solidity ^0.8.22;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
@@ -7,97 +6,116 @@ import {ERC1155} from "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import {ERC1155Burnable} from "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Burnable.sol";
 import {ERC1155Pausable} from "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Pausable.sol";
 import {ERC1155Supply} from "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Supply.sol";
-import {IERC20} from '@openzeppelin/contracts/interfaces/IERC20.sol';
+import {IERC20} from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
 import {ReentrancyGuard} from '@openzeppelin/contracts/utils/ReentrancyGuard.sol';
+import {SafeERC20} from '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol';
 
 contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, ERC1155Supply, ReentrancyGuard {
-    // Custom errors for better gas efficiency
-    error InvalidTokenPrice();
-    error InvalidMaxSupply();
-    error NotEnoughAllowance();
+    using SafeERC20 for IERC20;
 
+    // Custom errors for gas-efficient error handling
+    error InvalidConfiguration(string reason);
+    error InsufficientFunds(uint256 required, uint256 available);
+    error MaxSupplyExceeded(uint256 requested, uint256 available);
+
+    // Roles for access control
     bytes32 public constant URI_SETTER_ROLE = keccak256("URI_SETTER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    
-    uint256 public tokenPrice; // Price per token
-    uint256 public maxSupply;  // Max supply
-    address public developerAddress;
-    address public comissionAddress;
-    uint256 purchaseComissions;
-    IERC20 public paymentToken;
+    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
 
-    event TokensPurchased(address indexed buyer, uint256 indexed tokenID, uint256 amountTokens, uint256 totalPrice);
-    
+    mapping(uint256 => bool) public tokenEnabled;
+
+    address public immutable paymentReceiver;
+    address public immutable comissionAddress;
+    IERC20 public immutable paymentToken;
+    uint256 unitPrice; 
+    uint256 maxSupply; 
+    uint256 commissionRate;
+
+    // Events with more comprehensive information
+    event TokenConfigured(uint256 indexed tokenId, uint256 unitPrice, uint256 maxSupply, uint256 commissionRate);
+    event TokenPurchased(
+        address indexed buyer, 
+        uint256 indexed tokenId, 
+        uint256 amount, 
+        uint256 totalPrice,
+        uint256 commissionPaid
+    );
+    event TokenEnabledStatusChanged(uint256 indexed tokenId, bool enabled);
+
     constructor(
-        address admin,                  // Address of the contract administrator
-        uint256 _tokenPrice,            // Price per token
-        uint256 _maxSupply,             // Max token supply
-        string memory _initialUri,      // Initial URI for the token
-        address _developerAddress,      // Address of the developer to receive the payments
-        address _comissionAddress,      // Address of the comission to receive the payments
-        uint256 _purchaseComissions,    // Comission of every purchase to send to the comission address
-        address _paymentToken           // Token to use for payments
+        address admin,
+        address _paymentReceiver,
+        address _comissionAddress,
+        address _paymentToken,
+        uint256 _price, 
+        uint256 _maxSupply, 
+        uint256 _commissionRate,
+        uint256 _numTokens,
+        string memory _uri
+    ) ERC1155(_uri) {
+        if (admin == address(0) || _paymentReceiver == address(0) || _comissionAddress == address(0)) 
+            revert InvalidConfiguration("Invalid addresses");
 
-    ) ERC1155(_initialUri) {
-        require(_tokenPrice > 0, InvalidTokenPrice());
-        require(_maxSupply > 0,  InvalidMaxSupply());
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(MANAGER_ROLE, admin);
         _grantRole(MINTER_ROLE, admin);
-        _grantRole(PAUSER_ROLE, msg.sender);
+        _grantRole(PAUSER_ROLE, admin);
 
-        tokenPrice = _tokenPrice;
-        maxSupply = _maxSupply;
-        developerAddress = _developerAddress;
+        paymentReceiver = _paymentReceiver;
         comissionAddress = _comissionAddress;
-        purchaseComissions = _purchaseComissions;
         paymentToken = IERC20(_paymentToken);
+        unitPrice=_price;
+        maxSupply=_maxSupply;
+        commissionRate=_commissionRate;
+
+        for(uint256 i=0; i<_numTokens; i++) {
+            tokenEnabled[i] = true;
+            emit TokenConfigured(i, unitPrice, maxSupply, commissionRate);
+        }
     }
 
-    function setURI(string memory newuri) public onlyRole(URI_SETTER_ROLE) {
-        _setURI(newuri);
+    function toggleTokenEnabled(uint256 tokenId) external onlyRole(MANAGER_ROLE) {
+        tokenEnabled[tokenId] = !tokenEnabled[tokenId];
+        emit TokenEnabledStatusChanged(tokenId, tokenEnabled[tokenId]);
     }
 
-    function pause() public onlyRole(PAUSER_ROLE) {
-        _pause();
-    }
-
-    function unpause() public onlyRole(PAUSER_ROLE) {
-        _unpause();
-    }
-
-    function mint(address account, uint256 id, uint256 amount, bytes memory data)
-        public
-        onlyRole(MINTER_ROLE)
+    function makePurhcase(uint256 tokenId, uint256 amount) 
+        external 
+        nonReentrant 
+        whenNotPaused
     {
-        _mint(account, id, amount, data);
-    }
 
-    function mintBatch(address to, uint256[] memory ids, uint256[] memory amounts, bytes memory data)
-        public
-        onlyRole(MINTER_ROLE)
-    {
-        _mintBatch(to, ids, amounts, data);
-    }
+        if (!tokenEnabled[tokenId]) 
+            revert InvalidConfiguration("Token not enabled");
 
-    function makePurchase(uint256 amountTokens, uint256 tokenID) public nonReentrant {
-        require(amountTokens > 0, "Amount must be greater than zero");
-        require(totalSupply(tokenID) + amountTokens <= maxSupply, "Exceeds max supply");
+        if(totalSupply(tokenId) == maxSupply) 
+            revert MaxSupplyExceeded(amount, 0);
 
-        uint256 totalAmountToPay = amountTokens * tokenPrice;
-        uint256 comission = totalAmountToPay * (purchaseComissions / 100);
-        uint256 amountToPaydeveloper = totalAmountToPay - comission;
-        uint256 amountToPaycomission = comission;
+        uint256 tokensToBePurchased = amount / unitPrice;
 
-        // Transfer the payment from the buyer to this contract
-        bool comissionSuccess = paymentToken.transferFrom(msg.sender, comissionAddress, amountToPaycomission);
-        bool mainPaypemtSuccess = paymentToken.transferFrom(msg.sender, developerAddress, amountToPaydeveloper); 
-        
-        require(comissionSuccess, NotEnoughAllowance());
-        require(mainPaypemtSuccess, NotEnoughAllowance());
-        _mint(msg.sender, tokenID, amountTokens, ""); // Mint the purchased tokens
+        if(totalSupply(tokenId) + tokensToBePurchased > maxSupply){
+            tokensToBePurchased = maxSupply - totalSupply(tokenId);
+        }
 
-        emit TokensPurchased(msg.sender, tokenID, amountTokens, totalAmountToPay);
+        uint256 totalPrice = unitPrice * tokensToBePurchased;
+        uint256 commission = totalPrice * (commissionRate / 100);
+        uint256 netPayment = totalPrice - commission;
+
+        // Perform token transfers with SafeERC20
+        paymentToken.safeTransferFrom(msg.sender, comissionAddress, commission);
+        paymentToken.safeTransferFrom(msg.sender, paymentReceiver, netPayment);
+
+        _mint(msg.sender, tokenId, amount, "");
+
+        emit TokenPurchased(
+            msg.sender, 
+            tokenId, 
+            amount, 
+            totalPrice, 
+            commission
+        );
     }
 
     // The following functions are overrides required by Solidity.
