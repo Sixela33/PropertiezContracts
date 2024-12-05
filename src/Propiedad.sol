@@ -17,7 +17,10 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
     error InvalidConfiguration(string reason);
     error InsufficientFunds(uint256 required, uint256 available);
     error MaxSupplyExceeded(uint256 requested, uint256 available);
-
+    error InvalidAddress(string param);
+    error InvalidTokenConfiguration(string reason);
+    error PurchaseExceedsLimit(uint256 requested, uint256 maxAllowed);
+    
     // Roles for access control
     bytes32 public constant URI_SETTER_ROLE = keccak256("URI_SETTER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
@@ -27,7 +30,7 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
     mapping(uint256 => bool) public tokenEnabled;
 
     address public immutable paymentReceiver;
-    address public immutable comissionAddress;
+    address public immutable commissionAddress;
     IERC20 public immutable paymentToken;
     uint256 unitPrice; 
     uint256 maxSupply; 
@@ -43,11 +46,12 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
         uint256 commissionPaid
     );
     event TokenEnabledStatusChanged(uint256 indexed tokenId, bool enabled);
+    event TokenConfigUpdated(uint256 indexed tokenId, uint256 unitPrice);
 
     constructor(
         address admin,
         address _paymentReceiver,
-        address _comissionAddress,
+        address _commissionAddress,
         address _paymentToken,
         uint256 _price, 
         uint256 _maxSupply, 
@@ -55,8 +59,15 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
         uint256 _numTokens,
         string memory _uri
     ) ERC1155(_uri) {
-        if (admin == address(0) || _paymentReceiver == address(0) || _comissionAddress == address(0)) 
+        if (admin == address(0) || _paymentReceiver == address(0) || _commissionAddress == address(0)) 
             revert InvalidConfiguration("Invalid addresses");
+
+        _validateConstructorInputs(
+            admin, 
+            _paymentReceiver, 
+            _commissionAddress, 
+            _numTokens
+        );
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(MANAGER_ROLE, admin);
@@ -64,7 +75,7 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
         _grantRole(PAUSER_ROLE, admin);
 
         paymentReceiver = _paymentReceiver;
-        comissionAddress = _comissionAddress;
+        commissionAddress = _commissionAddress;
         paymentToken = IERC20(_paymentToken);
         unitPrice=_price;
         maxSupply=_maxSupply;
@@ -76,11 +87,25 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
         }
     }
 
+    function _validateConstructorInputs(
+        address admin, 
+        address _paymentReceiver, 
+        address _commissionAddress,
+        uint256 tokenCount
+    ) private pure {
+        if (admin == address(0)) revert InvalidAddress("Admin");
+        if (_paymentReceiver == address(0)) revert InvalidAddress("PaymentReceiver");
+        if (_commissionAddress == address(0)) revert InvalidAddress("CommissionAddress");
+        if (tokenCount == 0) revert InvalidTokenConfiguration("No tokens configured");
+    }
+
+    // Stops the token from being purchased
     function toggleTokenEnabled(uint256 tokenId) external onlyRole(MANAGER_ROLE) {
         tokenEnabled[tokenId] = !tokenEnabled[tokenId];
         emit TokenEnabledStatusChanged(tokenId, tokenEnabled[tokenId]);
     }
 
+    // User sends token he wishes to purchase and the ammount of paymentToken they wish to pay
     function makePurhcase(uint256 tokenId, uint256 amount) 
         external 
         nonReentrant 
@@ -104,7 +129,7 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
         uint256 netPayment = totalPrice - commission;
 
         // Perform token transfers with SafeERC20
-        paymentToken.safeTransferFrom(msg.sender, comissionAddress, commission);
+        paymentToken.safeTransferFrom(msg.sender, commissionAddress, commission);
         paymentToken.safeTransferFrom(msg.sender, paymentReceiver, netPayment);
 
         _mint(msg.sender, tokenId, amount, "");
@@ -116,6 +141,12 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
             totalPrice, 
             commission
         );
+    }
+
+    function updatePrice(uint256 tokenId, uint256 newPrice) external onlyRole(MANAGER_ROLE) {
+        if (newPrice == 0) revert InvalidConfiguration("Invalid price");
+        unitPrice = newPrice;
+        emit TokenConfigUpdated(tokenId, newPrice);
     }
 
     // The following functions are overrides required by Solidity.
