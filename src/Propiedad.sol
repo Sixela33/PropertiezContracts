@@ -22,29 +22,35 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
     
     uint256 public tokenPrice; // Price per token
     uint256 public maxSupply;  // Max supply
-    address public moneyManager;
+    address public developerAddress;
+    address public comissionAddress;
+    uint256 purchaseComissions;
     IERC20 public paymentToken;
 
     event TokensPurchased(address indexed buyer, uint256 indexed tokenID, uint256 amountTokens, uint256 totalPrice);
     
     constructor(
-        address contratoDesarollo, 
-        uint256 _tokenPrice, 
-        uint256 _maxSupply, 
-        string memory _initialUri,
-        address _paymentToken
+        address admin,                  // Address of the contract administrator
+        uint256 _tokenPrice,            // Price per token
+        uint256 _maxSupply,             // Max token supply
+        string memory _initialUri,      // Initial URI for the token
+        address _developerAddress,      // Address of the developer to receive the payments
+        address _comissionAddress,      // Address of the comission to receive the payments
+        uint256 _purchaseComissions,    // Comission of every purchase to send to the comission address
+        address _paymentToken           // Token to use for payments
 
     ) ERC1155(_initialUri) {
-        
         require(_tokenPrice > 0, InvalidTokenPrice());
         require(_maxSupply > 0,  InvalidMaxSupply());
-        _grantRole(DEFAULT_ADMIN_ROLE, contratoDesarollo);
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(MINTER_ROLE, admin);
         _grantRole(PAUSER_ROLE, msg.sender);
-        _grantRole(MINTER_ROLE, contratoDesarollo);
 
         tokenPrice = _tokenPrice;
         maxSupply = _maxSupply;
-        moneyManager = contratoDesarollo;
+        developerAddress = _developerAddress;
+        comissionAddress = _comissionAddress;
+        purchaseComissions = _purchaseComissions;
         paymentToken = IERC20(_paymentToken);
     }
 
@@ -78,14 +84,20 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
         require(amountTokens > 0, "Amount must be greater than zero");
         require(totalSupply(tokenID) + amountTokens <= maxSupply, "Exceeds max supply");
 
-        uint256 amountToPay = amountTokens * tokenPrice;
+        uint256 totalAmountToPay = amountTokens * tokenPrice;
+        uint256 comission = totalAmountToPay * (purchaseComissions / 100);
+        uint256 amountToPaydeveloper = totalAmountToPay - comission;
+        uint256 amountToPaycomission = comission;
 
         // Transfer the payment from the buyer to this contract
-        bool success = paymentToken.transferFrom(msg.sender, moneyManager, amountToPay);
+        bool comissionSuccess = paymentToken.transferFrom(msg.sender, comissionAddress, amountToPaycomission);
+        bool mainPaypemtSuccess = paymentToken.transferFrom(msg.sender, developerAddress, amountToPaydeveloper); 
         
-        require(success, NotEnoughAllowance());
+        require(comissionSuccess, NotEnoughAllowance());
+        require(mainPaypemtSuccess, NotEnoughAllowance());
         _mint(msg.sender, tokenID, amountTokens, ""); // Mint the purchased tokens
-        emit TokensPurchased(msg.sender, tokenID, amountTokens, amountToPay);
+
+        emit TokensPurchased(msg.sender, tokenID, amountTokens, totalAmountToPay);
     }
 
     // The following functions are overrides required by Solidity.
