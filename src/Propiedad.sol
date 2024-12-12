@@ -13,6 +13,19 @@ import {SafeERC20} from '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, ERC1155Supply, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    // Define a struct to hold important contract data
+    struct ContractData {
+        address paymentReceiver;
+        address commissionAddress;
+        address paymentToken;
+        uint256 unitPrice;
+        uint256 maxSupply;
+        uint256 commissionRate;
+        uint256[] tokenIds;
+        bool[] enabledStatus;
+        uint256[] circulatingSupply;
+    }
+
     // Custom errors for gas-efficient error handling
     error InvalidConfiguration(string reason);
     error InsufficientFunds(uint256 required, uint256 available);
@@ -35,6 +48,7 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
     uint256 unitPrice; 
     uint256 maxSupply; 
     uint256 commissionRate;
+    uint256 numTokens;
 
     // Events with more comprehensive information
     event TokenConfigured(uint256 indexed tokenId, uint256 unitPrice, uint256 maxSupply, uint256 commissionRate);
@@ -83,8 +97,10 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
 
         for(uint256 i=0; i<_numTokens; i++) {
             tokenEnabled[i] = true;
-            emit TokenConfigured(i, unitPrice, maxSupply, commissionRate);
+                        emit TokenConfigured(i, unitPrice, maxSupply, commissionRate);
         }
+
+        numTokens = _numTokens;
     }
 
     function _validateConstructorInputs(
@@ -106,7 +122,7 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
     }
 
     // User sends token he wishes to purchase and the ammount of paymentToken they wish to pay
-    function makePurhcase(uint256 tokenId, uint256 amount) 
+    function makePurchase(uint256 tokenId, uint256 amount) 
         external 
         nonReentrant 
         whenNotPaused
@@ -118,15 +134,16 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
         if(totalSupply(tokenId) == maxSupply) 
             revert MaxSupplyExceeded(amount, 0);
 
-        uint256 tokensToBePurchased = amount / unitPrice;
-
-        if(totalSupply(tokenId) + tokensToBePurchased > maxSupply){
-            tokensToBePurchased = maxSupply - totalSupply(tokenId);
+        if(totalSupply(tokenId) + amount > maxSupply){
+            amount = maxSupply - totalSupply(tokenId);
         }
 
-        uint256 totalPrice = unitPrice * tokensToBePurchased;
-        uint256 commission = totalPrice * (commissionRate / 100);
+        uint256 totalPrice = unitPrice * amount;
+        uint256 commission = (totalPrice * commissionRate) / 100;
         uint256 netPayment = totalPrice - commission;
+
+        uint256 contractAllowance = paymentToken.allowance(msg.sender, address(this));
+        if(contractAllowance < totalPrice) revert InsufficientFunds(totalPrice, contractAllowance);
 
         // Perform token transfers with SafeERC20
         paymentToken.safeTransferFrom(msg.sender, commissionAddress, commission);
@@ -166,4 +183,55 @@ contract Propiedad is ERC1155, AccessControl, ERC1155Pausable, ERC1155Burnable, 
     {
         return super.supportsInterface(interfaceId);
     }
+
+
+    function getPrice() public view  returns(uint256){
+        return unitPrice;
+    }
+
+    function getMaxSupply() public view returns(uint256) {
+        return maxSupply;
+    }    
+
+    function getCommissionRate() public view returns(uint256) {
+        return commissionRate;
+    }
+
+    function getUnitPrice() public view returns(uint256) {
+        return unitPrice;
+    }
+
+    function getIsTokenEnabled(uint256 id) public view returns(bool) {
+        return tokenEnabled[id];
+    }
+
+    function getNumTokens() public view returns(uint256) {
+        return numTokens;
+    }
+
+    function getData() public view returns (ContractData memory) {
+        uint256[] memory tokenIds = new uint256[](numTokens);
+        bool[] memory enabledStatus = new bool[](numTokens);
+        uint256[] memory circulatingSupply = new uint256[](numTokens);
+
+        for (uint256 i = 0; i < numTokens; i++) {
+            tokenIds[i] = i;
+            enabledStatus[i] = tokenEnabled[i];
+            circulatingSupply[i] = totalSupply(i);
+        }
+
+        return ContractData({
+            paymentReceiver: paymentReceiver,
+            commissionAddress: commissionAddress,
+            paymentToken: address(paymentToken),
+            unitPrice: unitPrice,
+            maxSupply: maxSupply,
+            circulatingSupply: circulatingSupply,
+            commissionRate: commissionRate,
+            tokenIds: tokenIds,
+            enabledStatus: enabledStatus
+        });
+    }
+
+    
 }
